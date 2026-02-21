@@ -1,0 +1,23 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - uploads:/app/uploads
+      - sqlite:/app
+    depends_on:
+      - redis
+    environment:
+      - REDIS_ADDR=redis:6379
+
+volumes:
+  uploads:
+  sqlite:

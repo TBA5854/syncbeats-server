@@ -1,43 +1,21 @@
 package controllers
 
 import (
-	"context"
-	"fmt"
-	"syncbeats-backend/db"
-	"syncbeats-backend/models"
+	"net/http"
+	"syncbeats-backend/services"
+
+	"github.com/labstack/echo/v5"
 )
 
-func CreateRoom(roomName, userID string) (*models.CreateRoomResponse, error) {
-	ctx := context.Background()
-	redis := db.GetRedisInstance()
-
-	roomID := fmt.Sprintf("room:%s", userID) 
-
-	err := redis.HSet(ctx, roomID, map[string]any{
-		"name":  roomName,
-		"owner": userID,
-	}).Err()
-	if err != nil {
-		return nil, err
-	}
-
-	return &models.CreateRoomResponse{
-		RoomID: roomID,
-		Name:   roomName,
-	}, nil
+type RoomController struct {
+	RoomService *services.RoomService
 }
 
-func JoinRoom(roomID, userID string) (*models.JoinRoomResponse, error) {
-	ctx := context.Background()
-	redis := db.GetRedisInstance()
-
-	err := redis.SAdd(ctx, fmt.Sprintf("%s:users", roomID), userID).Err()
+func (rc *RoomController) ListRooms(c *echo.Context) error {
+	rooms, err := rc.RoomService.ListRooms((*c).Request().Context())
 	if err != nil {
-		return nil, err
+		return (*c).JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	return &models.JoinRoomResponse{
-		RoomID: roomID,
-		UserID: userID,
-	}, nil
+	return (*c).JSON(http.StatusOK, rooms)
 }

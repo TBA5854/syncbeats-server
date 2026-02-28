@@ -16,7 +16,11 @@ import (
 )
 
 func main() {
-	if err := db.Init("syncbeats.db"); err != nil {
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "syncbeats.db"
+	}
+	if err := db.Init(dbPath); err != nil {
 		log.Fatalf("sqlite init: %v", err)
 	}
 	redisAddr := os.Getenv("REDIS_ADDR")
@@ -33,6 +37,9 @@ func main() {
 		Hub:         h,
 		RoomService: roomSvc,
 	}
+	roomCtrl := &controllers.RoomController{
+		RoomService: roomSvc,
+	}
 
 	e := echo.New()
 
@@ -42,6 +49,7 @@ func main() {
 
 	routes.RegisterFileRoutes(e)
 	routes.RegisterWSRoutes(e, wsCtrl)
+	routes.RegisterRoomRoutes(e, roomCtrl)
 
 	srv := echo.StartConfig{Address: ":3000"}
 	if err := srv.Start(context.Background(), e); err != nil {

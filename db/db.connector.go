@@ -5,7 +5,7 @@ import (
 	"log"
 	"sync"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -20,7 +20,7 @@ func GetInstance() *sql.DB {
 func Init(dbPath string) error {
 	var err error
 	once.Do(func() {
-		DB, err = sql.Open("sqlite3", dbPath)
+		DB, err = sql.Open("sqlite", dbPath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -32,6 +32,7 @@ func Init(dbPath string) error {
 
 		createTableSQL := `CREATE TABLE IF NOT EXISTS files (
 			fileId TEXT PRIMARY KEY,
+			fileName TEXT NOT NULL,
 			filePath TEXT NOT NULL
 		);`
 

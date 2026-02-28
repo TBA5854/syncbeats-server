@@ -8,10 +8,11 @@ import (
 )
 
 type Client struct {
-	UserID string
-	RoomID string
-	Conn   *websocket.Conn
-	mu     sync.Mutex
+	UserID   string
+	Username string
+	RoomID   string
+	Conn     *websocket.Conn
+	mu       sync.Mutex
 }
 
 func (c *Client) Send(v any) error {

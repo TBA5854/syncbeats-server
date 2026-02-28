@@ -9,4 +9,5 @@ import (
 func RegisterFileRoutes(e *echo.Echo) {
 	e.POST("/files/upload", controllers.UploadFile)
 	e.GET("/files/download", controllers.DownloadFile)
+	e.GET("/files/list", controllers.ListFiles)
 }

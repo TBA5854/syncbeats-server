@@ -20,8 +20,12 @@ type WSController struct {
 
 func (wc *WSController) HandleWS(c *echo.Context) error {
 	userID := (*c).QueryParam("user_id")
+	username := (*c).QueryParam("username")
 	if userID == "" {
 		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "user_id required"})
+	}
+	if username == "" {
+		username = userID // fallback
 	}
 
 	conn, err := utils.Upgrader.Upgrade((*c).Response(), (*c).Request(), nil)
@@ -30,8 +34,9 @@ func (wc *WSController) HandleWS(c *echo.Context) error {
 	}
 
 	client := &hub.Client{
-		UserID: userID,
-		Conn:   conn,
+		UserID:   userID,
+		Username: username,
+		Conn:     conn,
 	}
 	wc.Hub.Register(client)
 	defer wc.Hub.Unregister(client)
@@ -55,6 +60,15 @@ func (wc *WSController) readLoop(client *hub.Client) {
 
 		wc.dispatch(client, env)
 	}
+	// Disconnect cleanup
+	if client.RoomID != "" {
+		log.Printf("Client %s disconnected from room %s, triggering cleanup", client.UserID, client.RoomID)
+		_, _ = wc.RoomService.LeaveRoom(utils.BGCtx(), client.RoomID, client.UserID)
+		wc.Hub.BroadcastToRoom(client.RoomID, models.Envelope{
+			Event:   "room:member:left",
+			Payload: utils.MustMarshal(map[string]string{"user_id": client.UserID, "username": client.Username}),
+		})
+	}
 }
 
 func (wc *WSController) dispatch(client *hub.Client, env models.Envelope) {
@@ -77,6 +91,18 @@ func (wc *WSController) dispatch(client *hub.Client, env models.Envelope) {
 		wc.handleSyncPause(client, env.Payload)
 	case "sync:seek":
 		wc.handleSyncSeek(client, env.Payload)
+	case "queue:add":
+		wc.handleQueueAdd(client, env.Payload)
+	case "queue:remove":
+		wc.handleQueueRemove(client, env.Payload)
+	case "queue:move":
+		wc.handleQueueMove(client, env.Payload)
+	case "queue:next":
+		wc.handleQueueNext(client, env.Payload)
+	case "queue:prev":
+		wc.handleQueuePrev(client, env.Payload)
+	case "queue:play_at":
+		wc.handleQueuePlayAt(client, env.Payload)
 	default:
 		wc.sendError(client, "UNKNOWN_EVENT", "unknown event: "+env.Event)
 	}
@@ -125,7 +151,7 @@ func (wc *WSController) handleRoomJoin(client *hub.Client, raw json.RawMessage) 
 
 	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
 		Event:   "room:member:joined",
-		Payload: utils.MustMarshal(map[string]string{"user_id": p.UserID}),
+		Payload: utils.MustMarshal(map[string]string{"user_id": client.UserID, "username": client.Username}),
 	}, client)
 }
 
@@ -136,7 +162,7 @@ func (wc *WSController) handleRoomLeave(client *hub.Client, raw json.RawMessage)
 		return
 	}
 
-	if err := wc.RoomService.LeaveRoom(utils.BGCtx(), p.RoomID, p.UserID); err != nil {
+	if _, err := wc.RoomService.LeaveRoom(utils.BGCtx(), p.RoomID, p.UserID); err != nil {
 		log.Printf("LeaveRoom redis error: %v", err)
 	}
 
@@ -144,7 +170,7 @@ func (wc *WSController) handleRoomLeave(client *hub.Client, raw json.RawMessage)
 
 	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
 		Event:   "room:member:left",
-		Payload: utils.MustMarshal(map[string]string{"user_id": p.UserID}),
+		Payload: utils.MustMarshal(map[string]string{"user_id": client.UserID, "username": client.Username}),
 	})
 
 	_ = client.Send(models.Envelope{
@@ -224,8 +250,23 @@ func (wc *WSController) handleSyncPlay(client *hub.Client, raw json.RawMessage) 
 
 	state, err := wc.RoomService.Play(utils.BGCtx(), p.RoomID, p.Position)
 	if err != nil {
-		wc.sendError(client, "PLAY_FAILED", err.Error())
-		return
+		// If no track is set, try to play from queue at current index
+		roomState, getErr := wc.RoomService.GetRoomState(utils.BGCtx(), p.RoomID)
+		if getErr != nil {
+			wc.sendError(client, "PLAY_FAILED", err.Error())
+			return
+		}
+
+		if len(roomState.Queue) > 0 {
+			state, err = wc.RoomService.QueuePlayAt(utils.BGCtx(), p.RoomID, roomState.CurrentIndex)
+			if err != nil {
+				wc.sendError(client, "PLAY_FAILED", err.Error())
+				return
+			}
+		} else {
+			wc.sendError(client, "PLAY_FAILED", err.Error())
+			return
+		}
 	}
 
 	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
@@ -285,5 +326,133 @@ func (wc *WSController) sendError(client *hub.Client, code, message string) {
 	_ = client.Send(models.Envelope{
 		Event:   "error",
 		Payload: utils.MustMarshal(models.ErrorPayload{Code: code, Message: message}),
+	})
+}
+
+func (wc *WSController) handleQueueAdd(client *hub.Client, raw json.RawMessage) {
+	var p models.QueueAddPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		wc.sendError(client, "BAD_PAYLOAD", err.Error())
+		return
+	}
+
+	queue, err := wc.RoomService.QueueAdd(utils.BGCtx(), p.RoomID, p.TrackHash, p.Position)
+	if err != nil {
+		wc.sendError(client, "QUEUE_ADD_FAILED", err.Error())
+		return
+	}
+
+	// If this is the first track in an empty queue, set it as current
+	if len(queue) == 1 {
+		state, err := wc.RoomService.QueuePlayAt(utils.BGCtx(), p.RoomID, 0)
+		if err != nil {
+			wc.sendError(client, "QUEUE_PLAY_AT_FAILED", err.Error())
+			return
+		}
+
+		wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
+			Event:   "track:changed",
+			Payload: utils.MustMarshal(state),
+		})
+	}
+
+	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
+		Event:   "queue:updated",
+		Payload: utils.MustMarshal(map[string]any{"room_id": p.RoomID, "queue": queue}),
+	})
+}
+
+func (wc *WSController) handleQueueRemove(client *hub.Client, raw json.RawMessage) {
+	var p models.QueueRemovePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		wc.sendError(client, "BAD_PAYLOAD", err.Error())
+		return
+	}
+
+	queue, err := wc.RoomService.QueueRemove(utils.BGCtx(), p.RoomID, p.Index)
+	if err != nil {
+		wc.sendError(client, "QUEUE_REMOVE_FAILED", err.Error())
+		return
+	}
+
+	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
+		Event:   "queue:updated",
+		Payload: utils.MustMarshal(map[string]any{"room_id": p.RoomID, "queue": queue}),
+	})
+}
+
+func (wc *WSController) handleQueueMove(client *hub.Client, raw json.RawMessage) {
+	var p models.QueueMovePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		wc.sendError(client, "BAD_PAYLOAD", err.Error())
+		return
+	}
+
+	queue, err := wc.RoomService.QueueMove(utils.BGCtx(), p.RoomID, p.From, p.To)
+	if err != nil {
+		wc.sendError(client, "QUEUE_MOVE_FAILED", err.Error())
+		return
+	}
+
+	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
+		Event:   "queue:updated",
+		Payload: utils.MustMarshal(map[string]any{"room_id": p.RoomID, "queue": queue}),
+	})
+}
+
+func (wc *WSController) handleQueueNext(client *hub.Client, raw json.RawMessage) {
+	var p models.QueueNextPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		wc.sendError(client, "BAD_PAYLOAD", err.Error())
+		return
+	}
+
+	state, err := wc.RoomService.QueueNext(utils.BGCtx(), p.RoomID, p.FromIndex)
+	if err != nil {
+		wc.sendError(client, "QUEUE_NEXT_FAILED", err.Error())
+		return
+	}
+
+	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
+		Event:   "track:changed",
+		Payload: utils.MustMarshal(state),
+	})
+}
+
+func (wc *WSController) handleQueuePrev(client *hub.Client, raw json.RawMessage) {
+	var p models.QueuePrevPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		wc.sendError(client, "BAD_PAYLOAD", err.Error())
+		return
+	}
+
+	state, err := wc.RoomService.QueuePrev(utils.BGCtx(), p.RoomID, p.FromIndex)
+	if err != nil {
+		wc.sendError(client, "QUEUE_PREV_FAILED", err.Error())
+		return
+	}
+
+	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
+		Event:   "track:changed",
+		Payload: utils.MustMarshal(state),
+	})
+}
+
+func (wc *WSController) handleQueuePlayAt(client *hub.Client, raw json.RawMessage) {
+	var p models.QueuePlayAtPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		wc.sendError(client, "BAD_PAYLOAD", err.Error())
+		return
+	}
+
+	state, err := wc.RoomService.QueuePlayAt(utils.BGCtx(), p.RoomID, p.Index)
+	if err != nil {
+		wc.sendError(client, "QUEUE_PLAY_AT_FAILED", err.Error())
+		return
+	}
+
+	wc.Hub.BroadcastToRoom(p.RoomID, models.Envelope{
+		Event:   "track:changed",
+		Payload: utils.MustMarshal(state),
 	})
 }

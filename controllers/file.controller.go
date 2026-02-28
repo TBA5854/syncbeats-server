@@ -16,6 +16,9 @@ func UploadFile(c *echo.Context) error {
 	if err := (*c).Bind(req); err != nil {
 		return (*c).JSON(400, map[string]string{"error": "invalid request"})
 	}
+	println(req.Hash)
+	println(req.UserId)
+	println(req.FileName)
 
 	file, err := (*c).FormFile("file")
 	if err != nil {
@@ -33,6 +36,13 @@ func UploadFile(c *echo.Context) error {
 		return (*c).JSON(500, map[string]string{"error": "failed to compute hash"})
 	}
 	fileId := fmt.Sprintf("%x", hash.Sum(nil))
+
+	if req.Hash == "" {
+		return (*c).JSON(400, map[string]string{"error": "hash_required"})
+	}
+	if req.Hash != fileId {
+		return (*c).JSON(400, map[string]string{"error": "upload_interrupted"})
+	}
 
 	exists, err := FileExists(fileId)
 	if err != nil {
@@ -55,7 +65,12 @@ func UploadFile(c *echo.Context) error {
 			return (*c).JSON(500, map[string]string{"error": "failed to write file"})
 		}
 
-		if err := AddFileToDb(fileId, filePath); err != nil {
+		fileName := req.FileName
+		if fileName == "" {
+			fileName = file.Filename
+		}
+
+		if err := AddFileToDb(fileId, fileName, filePath); err != nil {
 			return (*c).JSON(500, map[string]string{"error": "failed to add file to database"})
 		}
 	}
@@ -75,4 +90,13 @@ func DownloadFile(c *echo.Context) error {
 	}
 
 	return (*c).File(filePath)
+}
+
+func ListFiles(c *echo.Context) error {
+	files, err := GetAllFiles()
+	if err != nil {
+		return (*c).JSON(500, map[string]string{"error": "database error"})
+	}
+
+	return (*c).JSON(200, models.FileListResponseModel{Files: files})
 }

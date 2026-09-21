@@ -16,11 +16,11 @@ func AddFileToDb(fileId string, fileName string, path string) error {
 	return err
 }
 
-func GetFilePathFromId(fileId string) (string, error) {
-	query := `SELECT filePath FROM files WHERE fileId = ?`
-	var filePath string
-	err := getDB().QueryRow(query, fileId).Scan(&filePath)
-	return filePath, err
+func GetFilePathAndNameFromId(fileId string) (string, string, error) {
+	query := `SELECT filePath, fileName FROM files WHERE fileId = ?`
+	var filePath, fileName string
+	err := getDB().QueryRow(query, fileId).Scan(&filePath, &fileName)
+	return filePath, fileName, err
 }
 
 func FileExists(fileId string) (bool, error) {

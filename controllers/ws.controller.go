@@ -121,6 +121,13 @@ func (wc *WSController) handleRoomCreate(client *hub.Client, raw json.RawMessage
 		return
 	}
 
+	// Add creator to the room
+	state, err = wc.RoomService.JoinRoom(utils.BGCtx(), state.RoomID, p.UserID, client.Username)
+	if err != nil {
+		wc.sendError(client, "JOIN_FAILED", err.Error())
+		return
+	}
+
 	wc.Hub.AddToRoom(client, state.RoomID)
 
 	_ = client.Send(models.Envelope{
@@ -136,7 +143,7 @@ func (wc *WSController) handleRoomJoin(client *hub.Client, raw json.RawMessage) 
 		return
 	}
 
-	state, err := wc.RoomService.JoinRoom(utils.BGCtx(), p.RoomID, p.UserID)
+	state, err := wc.RoomService.JoinRoom(utils.BGCtx(), p.RoomID, p.UserID, client.Username)
 	if err != nil {
 		wc.sendError(client, "JOIN_FAILED", err.Error())
 		return

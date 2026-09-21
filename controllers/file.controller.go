@@ -84,12 +84,12 @@ func DownloadFile(c *echo.Context) error {
 		return (*c).JSON(400, map[string]string{"error": "invalid request"})
 	}
 
-	filePath, err := GetFilePathFromId(req.FileId)
+	filePath, fileName, err := GetFilePathAndNameFromId(req.FileId)
 	if err != nil {
 		return (*c).JSON(404, map[string]string{"error": "file not found"})
 	}
 
-	return (*c).File(filePath)
+	return (*c).Attachment(filePath, fileName)
 }
 
 func ListFiles(c *echo.Context) error {

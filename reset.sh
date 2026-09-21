@@ -1,0 +1,1 @@
+rm -rf /home/tba/projects/syncbeats-server/uploads syncbeats.db 

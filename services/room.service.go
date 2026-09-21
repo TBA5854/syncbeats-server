@@ -36,6 +36,7 @@ func (s *RoomService) CreateRoom(ctx context.Context, ownerID, roomName string) 
 		RoomID:  roomID,
 		Name:    roomName,
 		OwnerID: ownerID,
+		Users:   []models.User{},
 	}
 
 	fields := map[string]any{
@@ -59,21 +60,51 @@ func (s *RoomService) CreateRoom(ctx context.Context, ownerID, roomName string) 
 	return state, nil
 }
 
-func (s *RoomService) JoinRoom(ctx context.Context, roomID, userID string) (*models.RoomState, error) {
+func (s *RoomService) JoinRoom(ctx context.Context, roomID, userID, username string) (*models.RoomState, error) {
 	state, err := s.GetRoomState(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.rdb.SAdd(ctx, roomMembersKey(roomID), userID).Err(); err != nil {
+	user := models.User{UserID: userID, Username: username}
+	userJSON, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("JoinRoom marshal: %w", err)
+	}
+
+	if err := s.rdb.SAdd(ctx, roomMembersKey(roomID), userJSON).Err(); err != nil {
 		return nil, fmt.Errorf("JoinRoom sadd: %w", err)
 	}
+
+	state.Users = append(state.Users, user)
 
 	return state, nil
 }
 
 func (s *RoomService) LeaveRoom(ctx context.Context, roomID, userID string) (bool, error) {
-	if err := s.rdb.SRem(ctx, roomMembersKey(roomID), userID).Err(); err != nil {
+	members, err := s.rdb.SMembers(ctx, roomMembersKey(roomID)).Result()
+	if err != nil {
+		return false, fmt.Errorf("LeaveRoom smembers: %w", err)
+	}
+
+	var userToRemove models.User
+	var userJSONToRemove string
+	for _, member := range members {
+		var user models.User
+		if err := json.Unmarshal([]byte(member), &user); err == nil {
+			if user.UserID == userID {
+				userToRemove = user
+				userJSONToRemove = member
+				break
+			}
+		}
+	}
+
+	if userToRemove.UserID == "" {
+		return false, nil // User not found, or already removed.
+	}
+
+	if err := s.rdb.SRem(ctx, roomMembersKey(roomID), userJSONToRemove).Err(); err != nil {
 		return false, fmt.Errorf("LeaveRoom srem: %w", err)
 	}
 
@@ -102,7 +133,13 @@ func (s *RoomService) GetRoomState(ctx context.Context, roomID string) (*models.
 	if len(vals) == 0 {
 		return nil, fmt.Errorf("room %q not found: %w", roomID, redis.Nil)
 	}
-	return parseRoomState(roomID, vals)
+
+	members, err := s.rdb.SMembers(ctx, roomMembersKey(roomID)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("GetRoomState smembers: %w", err)
+	}
+
+	return parseRoomState(roomID, vals, members)
 }
 
 func (s *RoomService) ListRooms(ctx context.Context) ([]*models.RoomState, error) {
@@ -297,13 +334,21 @@ func (s *RoomService) QueueMove(ctx context.Context, roomID string, from, to int
 	return q, nil
 }
 
-func parseRoomState(roomID string, vals map[string]string) (*models.RoomState, error) {
+func parseRoomState(roomID string, vals map[string]string, members []string) (*models.RoomState, error) {
 	state := &models.RoomState{
 		RoomID:       roomID,
 		Name:         vals["name"],
 		OwnerID:      vals["owner_id"],
 		TrackHash:    vals["track_hash"],
 		CurrentIndex: -1,
+		Users:        []models.User{},
+	}
+
+	for _, member := range members {
+		var user models.User
+		if err := json.Unmarshal([]byte(member), &user); err == nil {
+			state.Users = append(state.Users, user)
+		}
 	}
 
 	state.IsPlaying = vals["is_playing"] == "true"

@@ -58,7 +58,7 @@ Download a file by ID.
 |---|---|
 | `file_id` | string |
 
-**Response 200** — raw file bytes
+**Response 200** — raw file bytes with `Content-Disposition: attachment; filename="..."` header.
 
 **Errors**
 
